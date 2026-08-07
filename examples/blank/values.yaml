@@ -1,0 +1,23 @@
+replicaCount: 2
+
+image:
+  repository: myapp
+  pullPolicy: IfNotPresent
+  # `tag` is read by the deployment and is not here. Helm renders it as the
+  # empty string, so the image becomes `myapp:` and the pod never starts.
+
+service:
+  type: ClusterIP
+  port: 80
+
+# Defined, and still renders as nothing: a null is the empty string to Helm,
+# but anybody checking whether the key is set will find it and move on.
+ingressHost: null
+
+# A typo, from the other direction. Nothing reads `repicaCount`, and Helm has
+# no opinion about that at all.
+repicaCount: 5
+
+# Left over from a template that was deleted two releases ago.
+legacy:
+  featureFlag: true

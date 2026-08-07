@@ -1,0 +1,9 @@
+apiVersion: v2
+name: blank
+description: A chart whose templates read values that nothing defines
+version: 0.1.0
+appVersion: "1.0.0"
+dependencies:
+  - name: postgresql
+    version: 15.x.x
+    repository: https://charts.bitnami.com/bitnami

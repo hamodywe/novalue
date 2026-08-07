@@ -1,0 +1,202 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: test (node ${{ matrix.node }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        # The suite runs the TypeScript sources directly, which needs the type
+        # stripping that became the default in Node 22.18. The published package
+        # is compiled and supports Node 20.10 — verified below rather than
+        # assumed here.
+        node: ['22.18', '24']
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: node dist/cli.js --version
+
+  supported-runtime:
+    name: oldest supported runtime (node 20.10)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.10'
+      - name: Run the built CLI on the oldest supported Node
+        run: |
+          node --version
+          node dist/cli.js --version
+          node dist/cli.js examples/blank --json > report.json || true
+          node -e "
+            const r = require('./report.json');
+            if (r.schemaVersion !== 1) throw new Error('unexpected schema version');
+            if (r.summary.unresolved !== 3) {
+              throw new Error('detection changed on the old runtime');
+            }
+            console.log('ok on node ' + process.version);
+          "
+
+  selfcheck:
+    name: self-analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - name: The blank fixture must find every mechanism
+        run: |
+          node src/cli.ts examples/blank --json > blank.json || true
+          node -e "
+            const r = require('./blank.json');
+            const rules = new Set(r.findings.map((f) => f.ruleId));
+            for (const id of ['value-renders-as-nothing', 'null-value-read-unguarded',
+                              'value-never-read']) {
+              if (!rules.has(id)) throw new Error('the fixture lost ' + id);
+            }
+            if (r.summary.unresolved !== 3) {
+              throw new Error('expected 3 unresolved values, got ' + r.summary.unresolved);
+            }
+            console.log('blank fixture ok');
+          "
+
+      - name: The missing image tag must be caught, and the guarded ones left alone
+        run: |
+          node -e "
+            const r = require('./blank.json');
+            const paths = new Set(r.unresolved.map((u) => u.path));
+            if (!paths.has('image.tag')) {
+              throw new Error('a defined parent must not cover a missing child');
+            }
+            for (const safe of ['postgresql.auth.password', 'apiToken', 'region']) {
+              if (paths.has(safe)) throw new Error(safe + ' is handled and must not be reported');
+            }
+            console.log('coverage and guard rules ok');
+          "
+
+      - name: No values-file content may appear in the report
+        run: |
+          # A real values.yaml holds passwords. Findings print key paths only.
+          if grep -q "featureFlag: true" blank.json; then
+            echo "a values-file line reached the report"
+            exit 1
+          fi
+          echo "no values echoed"
+
+      - name: The blank fixture must exit 1
+        run: |
+          node src/cli.ts examples/blank > /dev/null 2>&1
+          code=$?
+          # 1 means findings. 2 would mean the tool could not run, which must
+          # not be mistaken for a successful detection.
+          if [ "$code" -ne 1 ]; then
+            echo "expected exit 1, got $code"
+            exit 1
+          fi
+
+      # The correct answer must produce silence — from a chart reading exactly
+      # as much as the broken one, not from a chart that reads less.
+      - name: The filled fixture must be completely clean
+        run: |
+          node src/cli.ts examples/filled --json > filled.json
+          node -e "
+            const r = require('./filled.json');
+            if (r.findings.length) {
+              console.log(JSON.stringify(r.findings, null, 2));
+              throw new Error('a rule fired on the chart that does everything right');
+            }
+            const blank = require('./blank.json');
+            if (r.summary.references !== blank.summary.references) {
+              throw new Error('the fixtures must read the same values for the comparison to mean anything');
+            }
+            console.log('filled fixture is clean across ' + r.summary.references + ' values, as intended');
+          "
+
+      - name: A directory with no chart must not report a pass
+        run: |
+          node src/cli.ts src --json > nochart.json
+          node -e "
+            const r = require('./nochart.json');
+            if (r.summary.chart !== null) throw new Error('there is no chart in src/');
+            if (!r.warnings.some((w) => w.includes('no Helm chart'))) {
+              throw new Error('a run that checked nothing must say so');
+            }
+            console.log('coverage honesty ok');
+          "
+
+      - name: The report must be deterministic
+        run: |
+          node src/cli.ts examples/blank --json > first.json || true
+          node src/cli.ts examples/blank --json > second.json || true
+          diff first.json second.json || {
+            echo "two runs on the same input disagreed"
+            exit 1
+          }
+
+  publint:
+    name: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Check the published package shape
+        run: |
+          npm pack --dry-run
+          node -e "
+            const fs = require('fs');
+            for (const f of ['dist/cli.js', 'dist/index.js', 'dist/index.d.ts']) {
+              if (!fs.existsSync(f)) throw new Error('missing from build: ' + f);
+            }
+            const pkg = require('./package.json');
+            if (Object.keys(pkg.dependencies || {}).length) {
+              throw new Error('novalue must ship with zero runtime dependencies');
+            }
+            const { VERSION } = require('./dist/version.js');
+            if (VERSION !== pkg.version) {
+              throw new Error('VERSION (' + VERSION + ') does not match package.json (' + pkg.version + ')');
+            }
+            console.log('package shape ok');
+          "

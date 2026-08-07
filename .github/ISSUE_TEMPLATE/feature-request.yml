@@ -1,0 +1,60 @@
+name: New check or chart pattern
+description: Propose a check novalue does not make, or a Helm pattern it misreads
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please read [ROADMAP.md](../../blob/main/ROADMAP.md) first — a few things
+        are deliberately not planned, with reasons. In particular: this tool
+        never renders a chart, because rendering runs the chart's own logic.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What is this?
+      options:
+        - A new check
+        - A guard pattern that is not recognised (false positive)
+        - A reference form that is not found (missed finding)
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What goes wrong today
+      description: The failure as it happens to a person. What rendered blank, and how long before anyone traced it back to the template?
+    validations:
+      required: true
+
+  - type: textarea
+    id: example
+    attributes:
+      label: A template and values pair that shows it
+      render: yaml
+    validations:
+      required: true
+
+  - type: textarea
+    id: certainty
+    attributes:
+      label: Will a manifest provably contain a blank field, or is it only suspicious?
+      description: "Provably is an error; suspicious is a warning. If it can be fine sometimes — an optional value, a subchart supplying it — say when."
+    validations:
+      required: true
+
+  - type: input
+    id: fix
+    attributes:
+      label: The one-line fix
+      description: Every finding prints a specific remediation. If it cannot be stated in a sentence, the check is not ready.
+    validations:
+      required: true
+
+  - type: input
+    id: schema
+    attributes:
+      label: Would values.schema.json already catch it?
+      description: "If a schema with `additionalProperties: false` covers it, recommending the schema is better than adding a rule."

@@ -1,0 +1,68 @@
+name: Wrong verdict
+description: A value reported as blank that is supplied, or a blank field that was missed
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Redact your values file before pasting it.** Passwords and tokens live
+        in `values.yaml` and more often in `values.prod.yaml`. This tool prints
+        key paths only, but an issue is public.
+
+        `helm template` settles most of these, because it shows what Helm really
+        renders:
+
+        ```bash
+        helm template ./chart | grep -n 'image:'
+        ```
+
+  - type: dropdown
+    id: direction
+    attributes:
+      label: Which way did it get it wrong?
+      options:
+        - A value was reported as rendering blank, but it is supplied
+        - A field rendered blank in a cluster and nothing was reported
+        - A key was called unread but a template does read it
+    validations:
+      required: true
+
+  - type: input
+    id: rule
+    attributes:
+      label: Rule id
+      description: "From the output — for example `value-renders-as-nothing`."
+
+  - type: textarea
+    id: template
+    attributes:
+      label: The template lines
+      description: The `{{ … }}` action in question, with anything wrapping it — an `if` block or a `default` changes the answer.
+      render: yaml
+    validations:
+      required: true
+
+  - type: textarea
+    id: values
+    attributes:
+      label: The relevant values
+      description: Keys only where you can; the structure is what matters, not the secrets.
+      render: yaml
+    validations:
+      required: true
+
+  - type: input
+    id: install
+    attributes:
+      label: How the chart is installed
+      description: "The full command. `--set` and `-f` are invisible to a repository scan, and half the disagreements come from there."
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`novalue --version`"
+    validations:
+      required: true
