@@ -6,4 +6,4 @@
  * global install, a local `node_modules/.bin` and a `node dist/cli.js` run.
  * A release checks this against the manifest in CI.
  */
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';

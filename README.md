@@ -27,16 +27,18 @@ helm upgrade app ./chart --set repicaCount=5     # reports success, changes noth
 ```
 $ npx novalue .
 
-11 values read · 8 defined · 3 render as nothing
-  █████████████████████▉         73% of what the templates read exists
+17 values read · 11 defined · 6 render as nothing
+  ███████████████████▍           65% of what the templates read exists
 
-  blank · 3 templates · 8 keys defined · 3 never read
+  blank · 4 templates · 10 keys defined · 3 never read
 
-error   value-renders-as-nothing templates/deployment.yaml:12
-  3 values the templates read are defined nowhere
+error   value-renders-as-nothing templates/autoscaling.yaml:10
+  6 values the templates read are defined nowhere
   fix: Add these keys to values.yaml with a sensible default, or wrap the
        reference in `required "…"`. A `values.schema.json` would also catch
        the typo direction.
+    templates/autoscaling.yaml:10 — .Values.autoscaling.minReplicas — minReplicas: {{ .Values.autoscaling.minReplicas }}
+    templates/autoscaling.yaml:24 — .Values.ingress.className — controller: {{ .className }}
     templates/deployment.yaml:12 — .Values.image.tag — image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
     templates/deployment.yaml:17 — .Values.apiUrl — value: {{ .Values.apiUrl }}
 
@@ -110,10 +112,33 @@ A reference is **not** reported when the chart already handles the missing case:
 ```yaml
 {{ required "apiToken is required" .Values.apiToken }}   # fails the render, loudly
 {{ .Values.region | default "eu-west-1" }}               # explicit fallback
-{{- if .Values.ingress.enabled }} … {{- end }}           # optional by design
+{{- if .Values.ingress.enabled }} … {{- end }}           # `ingress.enabled` is optional by design
 ```
 
 `required` is the fix this tool recommends, so a chart already using it is a chart doing the right thing.
+
+A block guards **the key it tests**, and that key's parents — not everything inside it:
+
+```yaml
+{{- if .Values.autoscaling.enabled }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}    # reported: nothing proved this exists
+{{- end }}
+```
+
+`enabled` being true says nothing about `minReplicas`. The sibling of a tested key is exactly what renders blank, so treating the whole block as covered is how a chart with empty fields gets a clean report.
+
+### Values read through `with`
+
+`with` rebinds the dot, so a reference can read a value without the string `.Values.` appearing on the line at all:
+
+```yaml
+{{- with .Values.ingress }}
+  - host: {{ .hostname }}        # this is .Values.ingress.hostname
+    class: {{ .className }}      # and this is .Values.ingress.className
+{{- end }}
+```
+
+Both are resolved against the enclosing scope, nested `with` blocks included. Inside `range` the dot is an *element* of a collection, not a values path — `{{ .name }}` there is a field of the item being iterated, and is deliberately not resolved, because inventing `.Values.name` from it would be a finding about a key that does not exist.
 
 ---
 
@@ -152,7 +177,8 @@ Stated plainly, because a tool that overstates its coverage is worse than no too
 - **Nothing is rendered.** A value referenced only inside a `define` block that is never included, or built by string concatenation, is judged on how it looks rather than on what Helm would do.
 - **Subchart values are not resolved.** Anything under a declared dependency's name — or under `global` — is assumed supplied by that chart's own defaults and is never reported, in either direction.
 - **`--set` and `-f` at install time are invisible.** A key supplied only on the command line looks undefined here. Pass the values file with `--values`, or use `required` in the template, which is better anyway.
-- **Guard detection is lexical.** An `if` block guards everything inside it, and `default`/`required`/`hasKey` guard within their action. A guard expressed some other way may produce a false positive.
+- **Guard detection is lexical.** A block guards the paths named in its own test; `default`/`required`/`hasKey` guard within their action. A guard expressed some other way — a variable assigned earlier, a helper that checks the key — may produce a false positive.
+- **Scope is followed for `with`, not for variables.** `{{- with .Values.a }}{{ .b }}{{- end }}` resolves to `a.b`. A scope captured into a variable (`{{- $cfg := .Values.a }}{{ $cfg.b }}`) is not followed, so those reads are invisible.
 - **One chart per run.** A repository with several is reported on for the first, with a warning naming the count.
 - **Named templates are read like any other file.** A `.Values` reference inside `_helpers.tpl` counts as read even if nothing includes that helper.
 

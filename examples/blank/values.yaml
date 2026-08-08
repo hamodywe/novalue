@@ -21,3 +21,11 @@ repicaCount: 5
 # Left over from a template that was deleted two releases ago.
 legacy:
   featureFlag: true
+
+# `enabled` is set, so the HPA block renders. The bounds it reads are not here.
+autoscaling:
+  enabled: true
+
+# Same shape, through a `with` block: the class name it reads is not here.
+ingress:
+  enabled: true

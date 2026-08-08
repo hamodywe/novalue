@@ -66,9 +66,23 @@ describe('reading references from a template', () => {
     assert.equal(found.find((r) => r.path === 'y')?.guarded, false);
   });
 
-  it('treats a value inside an if block as guarded', () => {
-    const found = readReferences('{{- if .Values.ingress.enabled }}\nhost: {{ .Values.ingress.host }}\n{{- end }}\n', 'a.yaml');
-    assert.equal(found.find((r) => r.path === 'ingress.host')?.guarded, true);
+  it('guards the value a block tests, and its ancestors', () => {
+    const source = '{{- if .Values.ingress.enabled }}\nx: {{ .Values.ingress.enabled }}\ny: {{ .Values.ingress }}\n{{- end }}\n';
+    const found = readReferences(source, 'a.yaml');
+
+    assert.equal(found.find((r) => r.path === 'ingress.enabled')?.guarded, true);
+    assert.equal(found.find((r) => r.path === 'ingress')?.guarded, true, 'the tested key existing proves its parent does');
+  });
+
+  it('does not let a block guard a sibling of the value it tests', () => {
+    // `if .Values.ingress.enabled` proves `enabled` is truthy. It proves
+    // nothing about `host` — and the sibling of a tested key is precisely what
+    // renders blank. Treating the whole block as guarded reported a chart with
+    // three blank fields as completely clean.
+    const source = '{{- if .Values.ingress.enabled }}\nhost: {{ .Values.ingress.host }}\n{{- end }}\n';
+    const found = readReferences(source, 'a.yaml');
+
+    assert.equal(found.find((r) => r.path === 'ingress.host')?.guarded, false);
   });
 
   it('stops guarding after the block ends', () => {
@@ -146,7 +160,7 @@ describe('reading values files', () => {
     const found = await findCharts(BLANK);
     assert.equal(found[0]?.name, 'blank');
     assert.deepEqual(found[0]?.dependencies, ['postgresql']);
-    assert.equal(found[0]?.templates.length, 3);
+    assert.equal(found[0]?.templates.length, 4);
   });
 });
 
@@ -268,10 +282,10 @@ describe('the blank fixture', () => {
     assert.equal(paths.has('region'), false, 'has a default');
   });
 
-  it('counts three of eleven references as unresolved', async () => {
+  it('counts six of seventeen references as unresolved', async () => {
     const { summary } = await analyze({ root: BLANK });
-    assert.equal(summary.references, 11);
-    assert.equal(summary.unresolved, 3);
+    assert.equal(summary.references, 17);
+    assert.equal(summary.unresolved, 6);
   });
 });
 

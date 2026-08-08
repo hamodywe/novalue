@@ -65,7 +65,7 @@ jobs:
           node -e "
             const r = require('./report.json');
             if (r.schemaVersion !== 1) throw new Error('unexpected schema version');
-            if (r.summary.unresolved !== 3) {
+            if (r.summary.unresolved !== 6) {
               throw new Error('detection changed on the old runtime');
             }
             console.log('ok on node ' + process.version);
@@ -92,8 +92,8 @@ jobs:
                               'value-never-read']) {
               if (!rules.has(id)) throw new Error('the fixture lost ' + id);
             }
-            if (r.summary.unresolved !== 3) {
-              throw new Error('expected 3 unresolved values, got ' + r.summary.unresolved);
+            if (r.summary.unresolved !== 6) {
+              throw new Error('expected 6 unresolved values, got ' + r.summary.unresolved);
             }
             console.log('blank fixture ok');
           "
@@ -110,6 +110,39 @@ jobs:
               if (paths.has(safe)) throw new Error(safe + ' is handled and must not be reported');
             }
             console.log('coverage and guard rules ok');
+          "
+
+      - name: A field read through a with block must be found
+        run: |
+          # `{{- with .Values.ingress }}` then `{{ .className }}` reads
+          # `.Values.ingress.className` without that string appearing anywhere.
+          # 0.1.0 saw nothing here and reported the chart clean.
+          node -e "
+            const r = require('./blank.json');
+            const paths = new Set(r.unresolved.map((u) => u.path));
+            if (!paths.has('ingress.className')) {
+              throw new Error('a with-scoped field was not resolved to its values path');
+            }
+            for (const sibling of ['autoscaling.minReplicas', 'autoscaling.maxReplicas']) {
+              if (!paths.has(sibling)) {
+                throw new Error(sibling + ': an if on a sibling key must not count as a guard');
+              }
+            }
+            console.log('scope resolution ok');
+          "
+
+      - name: A list element must not be read as a values path
+        run: |
+          # Inside `range`, the dot is an item of the collection. Resolving
+          # `.name` against the values tree there would invent a finding.
+          node -e "
+            const r = require('./blank.json');
+            for (const u of r.unresolved) {
+              if (/^env\./.test(u.path)) {
+                throw new Error('a range element field leaked into the report: ' + u.path);
+              }
+            }
+            console.log('range scoping ok');
           "
 
       - name: No values-file content may appear in the report

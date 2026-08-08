@@ -1,0 +1,26 @@
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  # The block is entered, because `enabled` is true. Neither of these keys is
+  # in values.yaml, and `enabled` being true says nothing about its siblings —
+  # so both render blank and the HPA is admitted with no bounds at all.
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+{{- end }}
+{{- if .Values.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+{{- with .Values.ingress }}
+metadata:
+  name: {{ $.Release.Name }}
+spec:
+  # `with` rebinds the dot, so this reads `.Values.ingress.className` without
+  # the string `.Values.` appearing anywhere on the line. It is how most charts
+  # are written, and it is not in values.yaml.
+  controller: {{ .className }}
+{{- end }}
+{{- end }}

@@ -1,6 +1,6 @@
 {
   "name": "novalue",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Finds the Helm values that render as nothing — the .Values a template reads and no values.yaml defines, and the keys nothing reads back.",
   "keywords": [
     "helm",

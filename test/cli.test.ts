@@ -75,8 +75,8 @@ describe('reporters', () => {
     const payload = JSON.parse(renderJson(await analyze({ root: BLANK })));
     assert.equal(payload.schemaVersion, 1);
     assert.equal(payload.tool.name, 'novalue');
-    assert.equal(payload.summary.references, 11);
-    assert.equal(payload.summary.unresolved, 3);
+    assert.equal(payload.summary.references, 17);
+    assert.equal(payload.summary.unresolved, 6);
   });
 
   it('lists the unresolved references with their location', async () => {
@@ -151,7 +151,7 @@ describe('the command line, end to end', () => {
   it('exits 1 on the blank fixture and counts the unresolved values', async () => {
     const { code, stdout, stderr } = await run([BLANK]);
     assert.equal(code, 1);
-    assert.match(stdout, /11 values read/);
+    assert.match(stdout, /17 values read/);
     assert.match(stderr, /defined nowhere/);
   });
 
@@ -169,7 +169,7 @@ describe('the command line, end to end', () => {
     // A key missing from values.yaml but present in the file you install with
     // is not a defect.
     const { stdout } = await run([BLANK, '--values', 'values.yaml', '--json']);
-    assert.equal(JSON.parse(stdout).summary.unresolved, 3);
+    assert.equal(JSON.parse(stdout).summary.unresolved, 6);
   });
 
   it('keeps JSON on stdout clean while the verdict goes to stderr', async () => {

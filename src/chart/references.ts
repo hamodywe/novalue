@@ -12,8 +12,9 @@
  *   `required "message" .Values.x`  fails the render loudly — the correct fix
  *   `default "v" .Values.x`         supplies a fallback
  *
- * So does a surrounding `if`, `with`, or `hasKey` test, which is the idiomatic
- * way to make a value optional.
+ * A surrounding `if`, `with` or `hasKey` test also makes a value deliberately
+ * optional — but only the value it actually tests. See `guardedPaths` below;
+ * that distinction is most of this file.
  */
 
 import type { ValueReference } from '../types.ts';
@@ -21,8 +22,38 @@ import type { ValueReference } from '../types.ts';
 /** `.Values.a.b.c`, `.Values.a.b.c` inside a pipeline, and the index form. */
 const REFERENCE = /\.Values\.([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)/g;
 
+/**
+ * A field read off the current scope: the `.hostname` in `{{ .hostname }}`.
+ *
+ * Only meaningful inside `with`, where `.` has been rebound to a value path.
+ * The lookbehind keeps it from firing on `.Values.x` (already matched above),
+ * on `$var.field`, on `(index . "a").b`, and on the second dot of `a.b`.
+ */
+const SCOPED_FIELD = /(?<![\w$)\]."])\.([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)/g;
+
+/** Built-in objects. Reachable from the root, never fields of a values scope. */
+const BUILT_INS = new Set([
+  'Values', 'Release', 'Chart', 'Capabilities', 'Files', 'Template', 'Subcharts',
+]);
+
 /** Functions that make a missing value safe or loud. */
 const GUARDS = /\b(default|required|hasKey|empty|coalesce|ternary|dig|get)\b/;
+
+/** An opening block action, with the keyword and the rest of the expression. */
+const OPENS = /\{\{-?\s*(if|with|range)\b([^}]*?)-?\}\}/g;
+const ENDS = /\{\{-?\s*end\s*-?\}\}/g;
+
+/** One open `if` / `with` / `range` block. */
+interface Frame {
+  /**
+   * The values path `.` refers to inside this block, or `null` when it cannot
+   * be known — inside `range`, `.` is an element of a list, so `.name` is a
+   * field of that element and says nothing about any values path.
+   */
+  readonly scope: string | null;
+  /** Values paths this block tests, which it therefore guards. */
+  readonly tests: readonly string[];
+}
 
 /**
  * Read the references in one template.
@@ -34,29 +65,19 @@ const GUARDS = /\b(default|required|hasKey|empty|coalesce|ternary|dig|get)\b/;
 export function readReferences(source: string, file: string): ValueReference[] {
   const references: ValueReference[] = [];
   const lines = source.split('\n');
-
-  // Blocks opened by `if`, `with` or `range` guard everything inside them,
-  // shallowly: a value tested by the block is not going to be rendered blank.
-  const openGuards: string[] = [];
+  const stack: Frame[] = [];
 
   for (const [index, raw] of lines.entries()) {
     const line = raw.trim();
+    const opened = openedOn(raw, currentScope(stack));
 
-    const closes = /\{\{-?\s*end\s*-?\}\}/.test(line);
-    const opens = /\{\{-?\s*(if|with|range)\b([\s\S]*?)-?\}\}/.exec(line);
+    // A reference inside the opening tag is the test, not a use of the result.
+    const testing = new Set(opened.flatMap((frame) => frame.tests));
+    const guards = guardedPaths(stack);
+    const scope = currentScope(stack);
 
-    // A reference inside the opening tag itself is the test, not a use.
-    const guardedByBlock = openGuards.length > 0;
-
-    for (const match of raw.matchAll(REFERENCE)) {
-      const path = match[1];
-      if (path === undefined) continue;
-
-      const at = match.index ?? 0;
-      // A template is mostly YAML, and YAML is full of comments explaining the
-      // values above them. Reading `.Values.x` out of prose would report a
-      // chart as broken because somebody documented it.
-      if (inComment(raw, at)) continue;
+    const record = (path: string, at: number): void => {
+      if (inComment(raw, at)) return;
 
       const expression = enclosingExpression(raw, at);
 
@@ -65,18 +86,149 @@ export function readReferences(source: string, file: string): ValueReference[] {
         file,
         line: index + 1,
         required: /\brequired\b/.test(expression),
-        guarded: guardedByBlock
+        guarded: testing.has(path)
           || GUARDS.test(expression)
-          || (opens !== null && (opens[2] ?? '').includes(path)),
+          || guards.some((guarded) => guarded === path || isAncestor(path, guarded)),
         context: line.length > 120 ? `${line.slice(0, 117)}…` : line,
       });
+    };
+
+    // A template is mostly YAML, and YAML is full of comments explaining the
+    // values above them. Reading `.Values.x` out of prose would report a chart
+    // as broken because somebody documented it.
+    for (const match of raw.matchAll(REFERENCE)) {
+      const path = match[1];
+      if (path !== undefined) record(path, match.index ?? 0);
     }
 
-    if (opens !== null) openGuards.push(opens[1] ?? 'if');
-    if (closes) openGuards.pop();
+    // `{{- with .Values.ingress }}` rebinds `.`, so the `{{ .hostname }}`
+    // below it reads `.Values.ingress.hostname` — a reference that is invisible
+    // if only `.Values.` is searched for, and one of the most common ways a
+    // chart renders a blank field.
+    if (scope !== null) {
+      for (const match of raw.matchAll(SCOPED_FIELD)) {
+        const field = match[1];
+        const at = match.index ?? 0;
+
+        if (field === undefined) continue;
+        if (BUILT_INS.has(field.split('.')[0] ?? field)) continue;
+        // Only inside an action. A bare `.foo` in YAML text is not a template.
+        if (!withinAction(raw, at)) continue;
+
+        // An opening tag's own expression is read against the outer scope,
+        // which is the scope still on the stack here — so `{{- range .items }}`
+        // inside `with .Values.a` is a genuine reference to `a.items`.
+        record(`${scope}.${field}`, at);
+      }
+    }
+
+    apply(stack, raw, opened);
   }
 
   return references;
+}
+
+/** The values path `.` currently refers to, or `null` if it is not a values path. */
+function currentScope(stack: readonly Frame[]): string | null {
+  return stack.length === 0 ? null : (stack[stack.length - 1] as Frame).scope;
+}
+
+/** Every path an enclosing block tests, and therefore guards. */
+function guardedPaths(stack: readonly Frame[]): string[] {
+  return stack.flatMap((frame) => frame.tests);
+}
+
+/**
+ * True when `path` is an ancestor of `guarded`.
+ *
+ * `{{ if .Values.ingress.enabled }}` proves `ingress` exists, so a reference to
+ * `ingress` inside the block is covered. It proves nothing about
+ * `ingress.hostname`, which is the whole point: the sibling of a tested key is
+ * exactly what renders blank, and treating the block as covering everything
+ * inside it is what let this tool report such a chart as clean.
+ */
+function isAncestor(path: string, guarded: string): boolean {
+  return guarded.startsWith(`${path}.`);
+}
+
+/** The blocks opened on one line, in order. */
+function openedOn(raw: string, scope: string | null): Frame[] {
+  const frames: Frame[] = [];
+
+  for (const match of raw.matchAll(OPENS)) {
+    const keyword = match[1] ?? 'if';
+    const expression = match[2] ?? '';
+    const tests = testedPaths(expression, scope);
+
+    if (keyword === 'range') {
+      // `.` becomes an element of the collection, not a values path.
+      frames.push({ scope: null, tests });
+      continue;
+    }
+    if (keyword === 'with') {
+      // `with` rebinds `.` — but only when what it binds is a values path.
+      frames.push({ scope: tests[0] ?? null, tests });
+      continue;
+    }
+    frames.push({ scope, tests });
+  }
+
+  return frames;
+}
+
+/** The values paths an expression mentions, resolved against the current scope. */
+function testedPaths(expression: string, scope: string | null): string[] {
+  const paths: string[] = [];
+
+  for (const match of expression.matchAll(REFERENCE)) {
+    if (match[1] !== undefined) paths.push(match[1]);
+  }
+
+  if (scope !== null) {
+    for (const match of expression.matchAll(SCOPED_FIELD)) {
+      const field = match[1];
+      if (field === undefined) continue;
+      if (BUILT_INS.has(field.split('.')[0] ?? field)) continue;
+      paths.push(`${scope}.${field}`);
+    }
+  }
+
+  return paths;
+}
+
+/**
+ * Push and pop the block stack for one line.
+ *
+ * Openings and `end`s are applied in the order they appear, so a block opened
+ * and closed on the same line leaves the stack as it found it.
+ */
+function apply(stack: Frame[], raw: string, opened: readonly Frame[]): void {
+  const events: { at: number; frame: Frame | null }[] = [];
+
+  let position = 0;
+  for (const match of raw.matchAll(OPENS)) {
+    events.push({ at: match.index ?? 0, frame: opened[position] ?? null });
+    position += 1;
+  }
+  for (const match of raw.matchAll(ENDS)) {
+    events.push({ at: match.index ?? 0, frame: null });
+  }
+
+  events.sort((a, b) => a.at - b.at);
+
+  for (const event of events) {
+    if (event.frame === null) stack.pop();
+    else stack.push(event.frame);
+  }
+}
+
+/** True when a position sits between `{{` and `}}`. */
+export function withinAction(line: string, at: number): boolean {
+  const open = line.lastIndexOf('{{', at);
+  if (open === -1) return false;
+
+  const close = line.indexOf('}}', open);
+  return close === -1 || close > at;
 }
 
 /**
